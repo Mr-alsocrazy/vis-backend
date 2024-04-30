@@ -206,3 +206,14 @@ def predict_link(embedding, w, subject, obj, num_relations):
         indices = sorted(indices, key=lambda x: x[1], reverse=True)
 
     return indices
+
+
+def count_edge_types(triplets):
+    edge_type_count = {}
+    for triple in triplets:
+        s, r, o = triple
+        if edge_type_count.get(r, -1) == -1:
+            edge_type_count[r] = 0
+        else:
+            edge_type_count[r] += 1
+    return edge_type_count
