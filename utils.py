@@ -199,8 +199,9 @@ def predict_link(embedding, w, subject, obj, num_relations):
     r = w[triplets[:, 1]]
 
     score = torch.sum(s * r * o, dim=1)
+    prob = torch.nn.functional.softmax(score)
 
-    indices = [(idx, val.item()) for idx, val in enumerate(score) if val > 0]
+    indices = [(idx, val.item()) for idx, val in enumerate(prob)]
 
     if len(indices) != 0:
         indices = sorted(indices, key=lambda x: x[1], reverse=True)

@@ -3,10 +3,11 @@ import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-import torch
-from sklearn.manifold import TSNE
+import networkx as nx
 
 import utils
+import torch
+import numpy as np
 from model.models import RGCN
 
 app = Flask(__name__)
@@ -78,16 +79,42 @@ def select_points():
     with open('model/emb2d.json', 'r') as file:
         embedding_2d = json.load(file)
 
-    print(edge_type_count)
+    graph = nx.DiGraph()
+    for s, r, o in all_triplets:
+        graph.add_edge(s, o)
+
+    pagerank = nx.pagerank(graph, alpha=0.85)
+    pagerank = sorted(pagerank.items(), key=lambda item: -item[1])
+    pagerank = [{'node': node, 'pagerank': round(pagerank, 4)} for node, pagerank in pagerank]
+
+    degree_centrality = nx.degree_centrality(graph)
+    degree_centrality = sorted(degree_centrality.items(), key=lambda item: -item[1])
+    degree_centrality = [{'node': node, 'degree_centrality': round(dc, 4)} for node, dc in degree_centrality]
 
     return jsonify(
         {
             'id2entity': id2entity,
             'id2relation': id2relation,
             'embedding': embedding_2d,
-            'edge_type_count': edge_type_count
+            'edge_type_count': edge_type_count,
+            'pagerank': pagerank,
+            'degree_centrality': degree_centrality,
+            'pagerank_min': pagerank[len(pagerank) - 1]['pagerank'],
+            'pagerank_max': pagerank[0]['pagerank'],
+            'degree_centrality_min': degree_centrality[len(degree_centrality) - 1]['degree_centrality'],
+            'degree_centrality_max': degree_centrality[0]['degree_centrality']
         }
     )
+
+
+@app.route('/selection', methods=['POST'])
+def selection():
+    nodes_to_render = request.form.get('selection').split(',')
+    nodes_to_render = [int(node) for node in nodes_to_render]
+    app.config['nodes_to_render'] = nodes_to_render
+    return jsonify({
+        'message': 200
+    })
 
 
 @app.route('/filter_by_link_type', methods=['POST'])
@@ -119,8 +146,10 @@ def visualization():
     with open('model/emb2d.json', 'r') as file:
         embedding_2d = json.load(file)
 
-    subgraph_adj = utils.get_k_hop_subgraph(adj_list, nodes=[1], k=3)
+    subgraph_adj = utils.get_k_hop_subgraph(adj_list, nodes=app.config['nodes_to_render'], k=3)
     in_degree, out_degree = utils.calculate_in_out_degree(subgraph_adj)
+
+    print(len(subgraph_adj.keys()))
 
     node_list = in_degree.keys()
     embedding_2d = {i: embedding_2d[i] for i in node_list}
@@ -132,7 +161,8 @@ def visualization():
             'in_degree': json.dumps(in_degree),
             'out_degree': json.dumps(out_degree),
             'embedding': embedding_2d,
-            'graph': json.dumps(subgraph_adj)
+            'graph': json.dumps(subgraph_adj),
+            'chosen': app.config['nodes_to_render']
         }
     )
 
@@ -145,6 +175,31 @@ def get_path():
     metapath = [int(item) for item in metapath]
     paths = utils.find_paths(app.config['SUBGRAPH'], int(start), int(end), 4)
     return jsonify({'path': paths})
+
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    start = int(request.form.get('start'))
+    end = int(request.form.get('end'))
+    id2entity, entity2id, id2relation, relation2id, all_triplets = utils.load_data('./data/wn18')
+    test_graph = utils.build_test_graph(len(entity2id), len(relation2id), torch.tensor(np.array(all_triplets)))
+
+    model = RGCN(len(entity2id), len(relation2id), num_bases=4, dropout=0.2)
+    model.load_state_dict(torch.load('model/best_mrr_model.pth')['state_dict'])
+
+    entity_embedding = model(test_graph.entity, test_graph.edge_index, test_graph.edge_type, test_graph.edge_norm)
+    relation_embedding = model.relation_embedding
+
+    result = utils.predict_link(entity_embedding, relation_embedding, start, end, len(relation2id))
+
+    result = [{'relation': relation, 'prob': prob} for relation, prob in result]
+    print(result)
+
+    return jsonify(
+        {
+            'result': result
+        }
+    )
 
 
 if __name__ == '__main__':
